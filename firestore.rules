@@ -1,0 +1,162 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "pa001736@gmail.com");
+    }
+
+    function isShopOwner(shopId) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.company_id == shopId;
+    }
+
+    // CRITICAL: Prevent shop owners from modifying their own subscription
+    function subscriptionUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription']);
+    }
+
+    function isValidSubscription(data) {
+      return data.plan in ["Trial Básico", "Trial Pro", "Básico", "Pro"] &&
+             data.status in ["active", "suspended", "trialing", "canceled", "pending"] &&
+             data.expiresAt is string && data.expiresAt.size() < 100;
+    }
+
+    function isValidAppointment(data) {
+      return data.clientName is string && data.clientName.size() > 0 && data.clientName.size() < 100 &&
+             data.date is string && data.date.size() == 10 &&
+             data.time is string && data.time.size() < 10 &&
+             data.services is list && data.services.size() < 20 &&
+             data.status in ["Pendente", "Confirmado", "Cancelado", "Concluído"] &&
+             (!("isBlocked" in data) || data.isBlocked is bool) &&
+             (!("notes" in data) || (data.notes is string && data.notes.size() < 1000));
+    }
+
+    function isValidSale(data) {
+      return data.amount is number && data.amount >= 0 &&
+             data.method in ["Pix", "Dinheiro", "Cartão"] &&
+             data.timestamp is string && data.timestamp.size() < 100;
+    }
+
+    function isValidSettings(data) {
+      return data.shopName is string && data.shopName.size() > 0 && data.shopName.size() < 100 &&
+             data.theme in ["light", "dark"] &&
+             data.services is list && data.services.size() < 50 &&
+             (!("slug" in data) || (data.slug is string && data.slug.size() >= 3 && data.slug.size() < 50)) &&
+             (!("pixKey" in data) || (data.pixKey is string && data.pixKey.size() < 100)) &&
+             (!("pixName" in data) || (data.pixName is string && data.pixName.size() < 100)) &&
+             (!("shopPhone" in data) || (data.shopPhone is string && data.shopPhone.size() < 30)) &&
+             (!("shopLogo" in data) || (data.shopLogo is string && data.shopLogo.size() < 1500000)) &&
+             (!("subscription" in data) || isValidSubscription(data.subscription));
+    }
+
+    function isValidBusySlot(data) {
+      return data.date is string && data.date.size() == 10 &&
+             data.time is string && data.time.size() > 0 && data.time.size() < 10 &&
+             data.appointmentId is string;
+    }
+
+    function isValidProfessional(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.role is string && data.role.size() < 50 &&
+             data.commissionRate is number && data.commissionRate >= 0 && data.commissionRate <= 100 &&
+             data.active is bool &&
+             (!("photo" in data) || (data.photo is string && data.photo.size() < 1500000));
+    }
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.category is string && data.category.size() < 50 &&
+             data.price is number && data.price >= 0 &&
+             data.cost is number && data.cost >= 0 &&
+             data.stock is number && data.stock >= 0 &&
+             data.minStock is number && data.minStock >= 0;
+    }
+
+    function isValidSlugMapping(data) {
+      return data.shopId is string && data.shopId.size() > 0 && data.shopId.size() < 100;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId || 
+        isAdmin() || 
+        (resource != null && resource.data.email.lower() == request.auth.token.email.lower())
+      );
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /slugs/{slug} {
+      allow read: if true;
+      allow create, update: if isAdmin() || (isAuthenticated() && 
+                            request.resource.data.shopId == request.auth.uid &&
+                            isValidSlugMapping(request.resource.data));
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.shopId == request.auth.uid);
+    }
+
+    match /shops/{shopId} {
+      // Public read for booking page, but only if the shop is not suspended
+      // Owner and Admin can always read
+      allow read: if isAdmin() || isShopOwner(shopId) || (resource != null && resource.data.subscription.status in ["active", "trialing"]);
+      
+      // Only owner or admin can write
+      // CRITICAL: Shop owner CANNOT change subscription field
+      allow create: if (isShopOwner(shopId) || isAdmin()) && isValidSettings(request.resource.data);
+      allow update: if (isAdmin() && isValidSettings(request.resource.data)) || 
+                       (isShopOwner(shopId) && isValidSettings(request.resource.data) && subscriptionUnchanged());
+      allow delete: if isAdmin();
+
+      match /appointments/{appointmentId} {
+        // Anyone can create an appointment (public booking)
+        // BUT they must also create a busy_slot in the same batch (enforced by busy_slots rules)
+        allow create: if isValidAppointment(request.resource.data);
+        // Only owner can read/manage
+        allow read, update, delete: if isShopOwner(shopId) || isAdmin();
+      }
+
+      match /sales/{saleId} {
+        allow read, write: if isShopOwner(shopId) || isAdmin();
+        allow create, update: if (isShopOwner(shopId) || isAdmin()) && isValidSale(request.resource.data);
+      }
+
+      match /busy_slots/{slotId} {
+        // Public read to check availability
+        allow read: if true;
+        
+        // Create is allowed if:
+        // 1. Data is valid
+        // 2. ID matches date_time (prevents duplicates)
+        // 3. An appointment is being created in the same batch (getAfter)
+        allow create: if isValidBusySlot(request.resource.data) && 
+                         slotId == request.resource.data.date + "_" + request.resource.data.time &&
+                         getAfter(/databases/$(database)/documents/shops/$(shopId)/appointments/$(request.resource.data.appointmentId)) != null;
+        
+        // Only owner can delete (when cancelling appointment)
+        allow delete: if isShopOwner(shopId) || isAdmin();
+      }
+
+      match /professionals/{professionalId} {
+        allow read, write: if isShopOwner(shopId) || isAdmin();
+        allow create, update: if (isShopOwner(shopId) || isAdmin()) && isValidProfessional(request.resource.data);
+      }
+
+      match /inventory/{productId} {
+        allow read, write: if isShopOwner(shopId) || isAdmin();
+        allow create, update: if (isShopOwner(shopId) || isAdmin()) && isValidProduct(request.resource.data);
+      }
+    }
+  }
+}

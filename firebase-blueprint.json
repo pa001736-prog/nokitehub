@@ -1,0 +1,177 @@
+{
+  "entities": {
+    "Appointment": {
+      "title": "Appointment",
+      "description": "A customer appointment for services.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string", "description": "The ID of the barber shop this appointment belongs to." },
+        "clientName": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "price": { "type": "number" },
+              "duration": { "type": "number" }
+            }
+          }
+        },
+        "status": { "type": "string", "enum": ["Pendente", "Confirmado", "Cancelado", "Concluído"] },
+        "isBlocked": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["clientName", "date", "time", "services", "status", "company_id"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "A financial transaction record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["Pix", "Dinheiro", "Cartão"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "appointmentId": { "type": "string" }
+      },
+      "required": ["amount", "method", "timestamp", "company_id"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A user of the system (admin or shop owner).",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "company_id": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["email", "company_id", "role"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Shop configuration settings.",
+      "type": "object",
+      "properties": {
+        "company_id": { "type": "string" },
+        "shopName": { "type": "string" },
+        "slug": { "type": "string" },
+        "theme": { "type": "string", "enum": ["light", "dark"] },
+        "pixKey": { "type": "string" },
+        "pixName": { "type": "string" },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "price": { "type": "number" },
+              "duration": { "type": "number" }
+            }
+          }
+        },
+        "subscription": {
+          "type": "object",
+          "properties": {
+            "plan": { "type": "string", "enum": ["Básico", "Pro", "Trial Básico", "Trial Pro"] },
+            "status": { "type": "string", "enum": ["active", "suspended", "trialing", "canceled", "pending"] },
+            "expiresAt": { "type": "string", "format": "date-time" },
+            "maxProfessionals": { "type": "number" }
+          }
+        }
+      },
+      "required": ["shopName", "slug", "theme", "services", "company_id"]
+    },
+    "SlugMapping": {
+      "title": "SlugMapping",
+      "description": "Maps a URL slug to a shop ID.",
+      "type": "object",
+      "properties": {
+        "shopId": { "type": "string" }
+      },
+      "required": ["shopId"]
+    },
+    "BusySlot": {
+      "title": "BusySlot",
+      "description": "Public record of a busy time slot.",
+      "type": "object",
+      "properties": {
+        "company_id": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "appointmentId": { "type": "string" }
+      },
+      "required": ["date", "time", "appointmentId", "company_id"]
+    },
+    "Professional": {
+      "title": "Professional",
+      "description": "A staff member of the shop.",
+      "type": "object",
+      "properties": {
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "photo": { "type": "string" },
+        "commissionRate": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "role", "active", "company_id"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "An item in the shop inventory.",
+      "type": "object",
+      "properties": {
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "price": { "type": "number" },
+        "cost": { "type": "number" },
+        "stock": { "type": "number" },
+        "minStock": { "type": "number" }
+      },
+      "required": ["name", "price", "stock", "company_id"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User accounts mapping and roles."
+    },
+    "/slugs/{slug}": {
+      "schema": "SlugMapping",
+      "description": "Mapping from slug to shop ID."
+    },
+    "/shops/{shopId}": {
+      "schema": "Settings",
+      "description": "Shop main document and settings."
+    },
+    "/shops/{shopId}/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Collection of appointments for a specific shop."
+    },
+    "/shops/{shopId}/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Collection of sales records for a specific shop."
+    },
+    "/shops/{shopId}/busy_slots/{slotId}": {
+      "schema": "BusySlot",
+      "description": "Busy slots for a specific shop."
+    },
+    "/shops/{shopId}/professionals/{professionalId}": {
+      "schema": "Professional",
+      "description": "Staff members of the shop."
+    },
+    "/shops/{shopId}/inventory/{productId}": {
+      "schema": "Product",
+      "description": "Shop inventory items."
+    }
+  }
+}

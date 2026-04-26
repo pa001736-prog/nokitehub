@@ -1,0 +1,174 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isAuthenticated() && (request.auth.token.email_verified == true);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "pa001736@gmail.com");
+    }
+
+    function isShopOwner(shopId) {
+      return isVerified() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.company_id == shopId;
+    }
+
+    // ID Validation (Pillar 3)
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    // CRITICAL: Prevent shop owners from modifying their own subscription
+    function subscriptionUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription']);
+    }
+
+    function isValidSubscription(data) {
+      return data.plan in ["Trial Básico", "Trial Pro", "Básico", "Pro"] &&
+             data.status in ["active", "suspended", "trialing", "canceled", "pending"] &&
+             data.expiresAt is string && data.expiresAt.size() < 100;
+    }
+
+    function isValidAppointment(data) {
+      return data.clientName is string && data.clientName.size() > 0 && data.clientName.size() < 100 &&
+             data.date is string && data.date.size() == 10 &&
+             data.time is string && data.time.size() < 10 &&
+             data.services is list && data.services.size() < 20 &&
+             data.professionalId is string && data.professionalId.size() > 0 &&
+             data.status in ["Pendente", "Confirmado", "Cancelado", "Concluído"] &&
+             (!("isBlocked" in data) || data.isBlocked is bool) &&
+             (!("notes" in data) || (data.notes is string && data.notes.size() < 1000));
+    }
+
+    function isValidSale(data) {
+      return data.amount is number && data.amount >= 0 &&
+             data.method in ["Pix", "Dinheiro", "Cartão"] &&
+             data.timestamp is string && data.timestamp.size() < 100;
+    }
+
+    function isValidSettings(data) {
+      return data.shopName is string && data.shopName.size() > 0 && data.shopName.size() < 100 &&
+             data.theme in ["light", "dark"] &&
+             data.services is list && data.services.size() < 50 &&
+             (!("slug" in data) || (data.slug is string && data.slug.size() >= 3 && data.slug.size() < 50)) &&
+             (!("pixKey" in data) || (data.pixKey is string && data.pixKey.size() < 100)) &&
+             (!("pixName" in data) || (data.pixName is string && data.pixName.size() < 100)) &&
+             (!("shopPhone" in data) || (data.shopPhone is string && data.shopPhone.size() < 30)) &&
+             (!("shopLogo" in data) || (data.shopLogo is string && data.shopLogo.size() < 1500000)) &&
+             (!("subscription" in data) || isValidSubscription(data.subscription));
+    }
+
+    function isValidBusySlot(data) {
+      return data.date is string && data.date.size() == 10 &&
+             data.time is string && data.time.size() > 0 && data.time.size() < 10 &&
+             data.appointmentId is string &&
+             data.professionalId is string && data.professionalId.size() > 0;
+    }
+
+    function isValidClient(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             (!("cpf" in data) || data.cpf == null || (data.cpf is string && data.cpf.size() < 20)) &&
+             data.totalAppointments is number && data.totalAppointments >= 0 &&
+             data.lastVisit is string &&
+             data.createdAt is string;
+    }
+
+    function isValidProfessional(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.role is string && data.role.size() < 50 &&
+             data.commissionRate is number && data.commissionRate >= 0 && data.commissionRate <= 100 &&
+             data.active is bool &&
+             (!("photo" in data) || (data.photo is string && data.photo.size() < 1500000));
+    }
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.category is string && data.category.size() < 50 &&
+             data.price is number && data.price >= 0 &&
+             data.cost is number && data.cost >= 0 &&
+             data.stock is number && data.stock >= 0 &&
+             data.minStock is number && data.minStock >= 0;
+    }
+
+    function isValidSlugMapping(data) {
+      return data.shopId is string && data.shopId.size() > 0 && data.shopId.size() < 100;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId || 
+        isAdmin() || 
+        (resource != null && resource.data.email.lower() == request.auth.token.email.lower())
+      );
+      allow create, update: if isAdmin() && isValidId(userId);
+      allow delete: if isAdmin();
+    }
+
+    match /slugs/{slug} {
+      allow read: if true;
+      allow create, update: if (isAdmin() || (isAuthenticated() && 
+                             request.resource.data.shopId == request.auth.uid)) &&
+                             isValidSlugMapping(request.resource.data);
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.shopId == request.auth.uid);
+    }
+
+    match /shops/{shopId} {
+      // Public read for booking page
+      allow read: if true;
+      
+      // Only owner or admin can write
+      allow create: if (isShopOwner(shopId) || isAdmin()) && isValidSettings(request.resource.data) && isValidId(shopId);
+      allow update: if (isValidId(shopId)) && (
+                        (isAdmin() && isValidSettings(request.resource.data)) || 
+                        (isShopOwner(shopId) && isValidSettings(request.resource.data) && subscriptionUnchanged())
+                      );
+      allow delete: if isAdmin();
+
+      match /appointments/{appointmentId} {
+        allow create: if isValidAppointment(request.resource.data) && isValidId(appointmentId);
+        allow read, update, delete: if (isShopOwner(shopId) || isAdmin()) && isValidId(appointmentId);
+      }
+
+      match /sales/{saleId} {
+        allow read, write: if (isShopOwner(shopId) || isAdmin()) && isValidId(saleId);
+      }
+
+      match /busy_slots/{slotId} {
+        allow read: if true;
+        allow create: if isValidBusySlot(request.resource.data) && 
+                         slotId == request.resource.data.date + "_" + request.resource.data.time + "_" + request.resource.data.professionalId &&
+                         getAfter(/databases/$(database)/documents/shops/$(shopId)/appointments/$(request.resource.data.appointmentId)) != null;
+        allow delete: if (isShopOwner(shopId) || isAdmin()) && isValidId(slotId);
+      }
+
+      match /professionals/{professionalId} {
+        allow read: if true;
+        allow write: if (isShopOwner(shopId) || isAdmin()) && isValidId(professionalId);
+      }
+
+      match /clients/{clientId} {
+         allow create, update: if isValidClient(request.resource.data);
+         allow read, delete: if isShopOwner(shopId) || isAdmin();
+      }
+
+      match /inventory/{productId} {
+        allow read, write: if (isShopOwner(shopId) || isAdmin()) && isValidId(productId);
+      }
+    }
+  }
+}
